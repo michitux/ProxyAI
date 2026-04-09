@@ -134,7 +134,7 @@ object GitUtil {
             return emptyList()
         }
 
-        val matchingCommits = commitHashes.associateWith { mutableListOf<RepositoryCommit>() }
+        val matchingCommits = mutableMapOf<String, MutableList<RepositoryCommit>>()
 
         getProjectRepositories(project).forEach { repository ->
             getCommitsForHashes(project, repository, commitHashes)
