@@ -169,7 +169,10 @@ class GitCommitTagProcessor(
     private fun getDiffString(project: Project, commitHash: String): String {
         return ProgressManager.getInstance().runProcessWithProgressSynchronously<String, Exception>(
             {
-                val repository = GitUtil.getRepositoryForRoot(project, tagDetails.repositoryRootPath)
+                val repository = tagDetails.repositoryRootPath
+                    .takeIf { it.isNotBlank() }
+                    ?.let { GitUtil.getRepositoryForRoot(project, it) }
+                    ?: GitUtil.getCommitsForHashes(project, listOf(commitHash)).firstOrNull()?.repository
                     ?: return@runProcessWithProgressSynchronously ""
 
                 val diff = GitUtil.getCommitDiffs(project, repository, commitHash)
