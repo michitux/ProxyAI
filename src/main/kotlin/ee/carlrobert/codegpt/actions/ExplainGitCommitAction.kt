@@ -13,7 +13,6 @@ import ee.carlrobert.codegpt.Icons
 import ee.carlrobert.codegpt.toolwindow.chat.ChatToolWindowContentManager
 import ee.carlrobert.codegpt.ui.textarea.header.tag.GitCommitTagDetails
 import ee.carlrobert.codegpt.util.GitUtil
-import git4idea.GitCommit
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -37,7 +36,13 @@ class ExplainGitCommitAction : AnAction(
         scope.launch {
             val gitCommits =
                 getCommitsForRevisions(project, e.getData(VcsDataKeys.VCS_REVISION_NUMBERS))
-                    .map { GitCommitTagDetails(it.id.asString(), it.fullMessage) }
+                    .map {
+                        GitCommitTagDetails(
+                            it.commit.id.asString(),
+                            it.commit.fullMessage,
+                            it.repository.root.path
+                        )
+                    }
 
             project.service<ChatToolWindowContentManager>().apply {
                 runInEdt {
@@ -54,17 +59,15 @@ class ExplainGitCommitAction : AnAction(
     private fun getCommitsForRevisions(
         project: Project,
         revisionNumbers: Array<VcsRevisionNumber>?
-    ): List<GitCommit> {
+    ): List<GitUtil.RepositoryCommit> {
         if (revisionNumbers == null) {
             throw IllegalArgumentException("No commit revisions found")
         }
 
-        val gitCommits = GitUtil.getProjectRepository(project)?.let { repository ->
-            GitUtil.getCommitsForHashes(
-                project,
-                repository,
-                revisionNumbers.map { it.asString() })
-        } ?: throw IllegalStateException("Unable to find git repository")
+        val gitCommits = GitUtil.getCommitsForHashes(
+            project,
+            revisionNumbers.map { it.asString() }
+        )
 
         if (gitCommits.isEmpty()) {
             throw IllegalStateException(

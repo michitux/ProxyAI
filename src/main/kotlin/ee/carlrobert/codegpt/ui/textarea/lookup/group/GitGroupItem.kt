@@ -23,19 +23,13 @@ class GitGroupItem(private val project: Project) : AbstractLookupGroupItem(), Dy
 
     override suspend fun updateLookupList(lookup: LookupImpl, searchText: String) {
         withContext(Dispatchers.Default) {
-            GitUtil.getProjectRepository(project)?.let {
-                GitUtil.visitRepositoryCommits(project, it) { commit ->
-                    if (commit.id.asString().contains(searchText, true)
-                        || commit.fullMessage.contains(searchText, true)
-                    ) {
-                        runInEdt {
-                            LookupUtil.addLookupItem(
-                                lookup,
-                                GitCommitActionItem(commit),
-                                searchText = searchText
-                            )
-                        }
-                    }
+            GitUtil.getAllRecentCommits(project, searchText, 50).forEach { repositoryCommit ->
+                runInEdt {
+                    LookupUtil.addLookupItem(
+                        lookup,
+                        GitCommitActionItem(project, repositoryCommit),
+                        searchText = searchText
+                    )
                 }
             }
         }
@@ -43,12 +37,9 @@ class GitGroupItem(private val project: Project) : AbstractLookupGroupItem(), Dy
 
     override suspend fun getLookupItems(searchText: String): List<LookupActionItem> {
         return withContext(Dispatchers.Default) {
-            GitUtil.getProjectRepository(project)?.let {
-                val recentCommits = GitUtil.getAllRecentCommits(project, it, searchText)
-                    .take(10)
-                    .map { commit -> GitCommitActionItem(commit) }
-                listOf(IncludeCurrentChangesActionItem()) + recentCommits
-            } ?: emptyList()
+            val recentCommits = GitUtil.getAllRecentCommits(project, searchText, 10)
+                .map { repositoryCommit -> GitCommitActionItem(project, repositoryCommit) }
+            listOf(IncludeCurrentChangesActionItem()) + recentCommits
         }
     }
 }

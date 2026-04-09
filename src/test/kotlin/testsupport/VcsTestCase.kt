@@ -20,7 +20,7 @@ import java.nio.file.Path
 
 open class VcsTestCase : HeavyPlatformTestCase() {
 
-    private lateinit var projectDir: Path
+    protected lateinit var projectDir: Path
 
     @Throws(Exception::class)
     override fun setUp() {
@@ -29,26 +29,35 @@ open class VcsTestCase : HeavyPlatformTestCase() {
     }
 
     fun git(command: GitCommand, parameters: List<String> = emptyList()) {
-        val checkoutHandler = GitLineHandler(project, projectDir.toFile(), command)
+        git(projectDir, command, parameters)
+    }
+
+    fun git(repositoryDir: Path, command: GitCommand, parameters: List<String> = emptyList()) {
+        val checkoutHandler = GitLineHandler(project, repositoryDir.toFile(), command)
         checkoutHandler.addParameters(parameters)
         service<Git>().runCommand(checkoutHandler).throwOnError()
     }
 
     fun registerRepository(): GitRepository =
+        registerRepositories(projectDir).first()
+
+    fun registerRepositories(vararg repositoryDirs: Path): List<GitRepository> =
         ProjectLevelVcsManager.getInstance(project).run {
-            directoryMappings = listOf(VcsDirectoryMapping(projectDir.toString(), GitVcs.NAME))
-            Files.createDirectories(projectDir)
+            directoryMappings = repositoryDirs.map { VcsDirectoryMapping(it.toString(), GitVcs.NAME) }
+            repositoryDirs.forEach { Files.createDirectories(it) }
             Assert.assertFalse(
                 "There are no VCS roots. Active VCSs: $allActiveVcss",
                 allVcsRoots.isEmpty()
             )
-            val file = LocalFileSystem.getInstance().refreshAndFindFileByNioFile(projectDir)
 
             runBlocking(Dispatchers.IO) {
-                val repository = project.service<GitRepositoryManager>().getRepositoryForRoot(file)
-                assertThat(repository).describedAs("Couldn't find repository for root $projectDir")
-                    .isNotNull()
-                repository!!
+                repositoryDirs.map { repositoryDir ->
+                    val file = LocalFileSystem.getInstance().refreshAndFindFileByNioFile(repositoryDir)
+                    val repository = project.service<GitRepositoryManager>().getRepositoryForRoot(file)
+                    assertThat(repository).describedAs("Couldn't find repository for root $repositoryDir")
+                        .isNotNull()
+                    repository!!
+                }
             }
         }
 }

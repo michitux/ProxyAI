@@ -6,9 +6,11 @@ import com.intellij.openapi.diff.impl.patch.IdeaTextPatchBuilder
 import com.intellij.openapi.diff.impl.patch.UnifiedDiffWriter
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.guessProjectDir
-import com.intellij.openapi.util.io.toNioPathOrNull
+import com.intellij.openapi.util.io.FileUtil
 import com.intellij.openapi.vcs.VcsException
+import com.intellij.openapi.vcs.changes.Change
 import com.intellij.openapi.vcs.changes.ChangeListManager
+import com.intellij.openapi.vfs.VfsUtil
 import ee.carlrobert.codegpt.codecompletions.truncateText
 import git4idea.GitCommit
 import git4idea.commands.Git
@@ -24,41 +26,80 @@ object GitUtil {
 
     private val logger = thisLogger()
 
+    data class RepositoryCommit(
+        val repository: GitRepository,
+        val commit: GitCommit
+    )
+
+    @JvmStatic
+    fun getProjectRepositories(project: Project): List<GitRepository> {
+        val repositoryManager = project.service<GitRepositoryManager>()
+        return try {
+            val primaryRepository = project.guessProjectDir()?.let {
+                repositoryManager.getRepositoryForFile(it)
+            }
+
+            buildList {
+                primaryRepository?.let { add(it) }
+                addAll(repositoryManager.repositories.filter { it.root.path != primaryRepository?.root?.path })
+            }
+        } catch (e: Exception) {
+            logger.warn("Failed to get git repositories", e)
+            repositoryManager.repositories
+        }
+    }
+
     @Throws(VcsException::class)
     @JvmStatic
     fun getProjectRepository(project: Project): GitRepository? {
-        val repositoryManager = project.service<GitRepositoryManager>()
-        return try {
-            repositoryManager.getRepositoryForFile(project.guessProjectDir())
-                ?: repositoryManager.repositories.firstOrNull()
-        } catch (e: Exception) {
-            logger.warn("Failed to get git repository", e)
-            repositoryManager.repositories.firstOrNull()
+        return getProjectRepositories(project).firstOrNull()
+    }
+
+    @JvmStatic
+    fun getRepositoryForRoot(project: Project, repositoryRootPath: String): GitRepository? {
+        return getProjectRepositories(project).firstOrNull { it.root.path == repositoryRootPath }
+    }
+
+    @JvmStatic
+    fun getRepositoryDisplayPath(project: Project, repository: GitRepository): String {
+        val projectDir = project.guessProjectDir()
+        return if (projectDir != null) {
+            VfsUtil.getRelativePath(repository.root, projectDir)
+                ?.takeIf { it.isNotBlank() }
+                ?: repository.root.name
+        } else {
+            repository.root.path
         }
     }
 
     fun getCurrentChanges(project: Project): String? {
         try {
-            val repoRootPath = project.basePath?.toNioPathOrNull() ?: return null
+            val repositories = getProjectRepositories(project)
+            if (repositories.isEmpty()) {
+                return null
+            }
+
             val changes = ChangeListManager.getInstance(project).allChanges
                 .filter { change ->
                     change.virtualFile?.let { !it.fileType.isBinary } ?: false
                 }
 
-            val patches = IdeaTextPatchBuilder.buildPatch(
-                project, changes, repoRootPath, false, true
-            ).sortedByDescending { patch ->
-                patch.afterVersionId?.let {
-                    it.substringAfter("(date ")
-                        .substringBefore(")")
-                        .toLongOrNull() ?: 0L
-                } ?: 0L
+            val includeRepositoryLabels = repositories.size > 1
+            return repositories.mapNotNull { repository ->
+                buildRepositoryDiff(
+                    project,
+                    repository,
+                    changes.filter { belongsToRepository(it, repository) }
+                )?.takeIf { it.isNotBlank() }?.let { diff ->
+                    if (includeRepositoryLabels) {
+                        "# Repository: ${getRepositoryDisplayPath(project, repository)}\n$diff"
+                    } else {
+                        diff
+                    }
+                }
             }
-            val diffWriter = StringWriter()
-            UnifiedDiffWriter.write(
-                null, repoRootPath, patches, diffWriter, "\n\n", null, null
-            )
-            return diffWriter.toString().truncateText(16_000, true)
+                .joinToString("\n\n")
+                .truncateText(16_000, true)
         } catch (e: VcsException) {
             logger.error("Failed to get git context", e)
             return null
@@ -81,6 +122,29 @@ object GitUtil {
             })
 
         return result
+    }
+
+    @Throws(VcsException::class)
+    fun getCommitsForHashes(
+        project: Project,
+        commitHashes: List<String>
+    ): List<RepositoryCommit> {
+        if (commitHashes.isEmpty()) {
+            return emptyList()
+        }
+
+        val matchingCommits = commitHashes.associateWith { mutableListOf<RepositoryCommit>() }
+            .toMutableMap()
+
+        getProjectRepositories(project).forEach { repository ->
+            getCommitsForHashes(project, repository, commitHashes)
+                .forEach { commit ->
+                    matchingCommits.getOrPut(commit.id.asString()) { mutableListOf() }
+                        .add(RepositoryCommit(repository, commit))
+                }
+        }
+
+        return commitHashes.flatMap { matchingCommits[it].orEmpty() }
     }
 
     @Throws(VcsException::class)
@@ -112,6 +176,21 @@ object GitUtil {
         } catch (e: VcsException) {
             logger.error("Error fetching commit history: {}", e.message)
         }
+    }
+
+    @Throws(VcsException::class)
+    fun getAllRecentCommits(
+        project: Project,
+        searchText: String? = "",
+        limit: Int = 250
+    ): List<RepositoryCommit> {
+        return getProjectRepositories(project)
+            .flatMap { repository ->
+                getAllRecentCommits(project, repository, searchText, limit)
+                    .map { RepositoryCommit(repository, it) }
+            }
+            .sortedByDescending { it.commit.commitTime }
+            .take(limit)
     }
 
     @Throws(VcsException::class)
@@ -152,5 +231,52 @@ object GitUtil {
                     !it.startsWith("- ") &&
                     !it.startsWith("commit ")
         }
+    }
+
+    private fun buildRepositoryDiff(
+        project: Project,
+        repository: GitRepository,
+        changes: List<Change>
+    ): String? {
+        if (changes.isEmpty()) {
+            return null
+        }
+
+        val repositoryRootPath = repository.root.toNioPath()
+        val patches = IdeaTextPatchBuilder.buildPatch(
+            project,
+            changes,
+            repositoryRootPath,
+            false,
+            true
+        ).sortedByDescending { patch ->
+            patch.afterVersionId?.let {
+                it.substringAfter("(date ")
+                    .substringBefore(")")
+                    .toLongOrNull() ?: 0L
+            } ?: 0L
+        }
+
+        return StringWriter().use { diffWriter ->
+            UnifiedDiffWriter.write(
+                null,
+                repositoryRootPath,
+                patches,
+                diffWriter,
+                "\n\n",
+                null,
+                null
+            )
+            diffWriter.toString()
+        }
+    }
+
+    private fun belongsToRepository(change: Change, repository: GitRepository): Boolean {
+        val path = change.virtualFile?.path
+            ?: change.afterRevision?.file?.path
+            ?: change.beforeRevision?.file?.path
+            ?: return false
+
+        return FileUtil.isAncestor(repository.root.path, path, false)
     }
 }

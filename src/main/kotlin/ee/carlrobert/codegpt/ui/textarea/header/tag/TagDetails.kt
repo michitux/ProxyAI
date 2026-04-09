@@ -133,7 +133,8 @@ data class PersonaTagDetails(var personaDetails: PersonaDetails) :
 
 data class GitCommitTagDetails(
     val commitHash: String,
-    val fullMessage: String
+    val fullMessage: String,
+    val repositoryRootPath: String
 ) : TagDetails(commitHash.take(6), AllIcons.Vcs.CommitNode) {
     override fun getTooltipText(): String = fullMessage
 }
