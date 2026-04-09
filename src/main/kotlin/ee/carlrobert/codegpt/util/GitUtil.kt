@@ -38,10 +38,11 @@ object GitUtil {
             val primaryRepository = project.guessProjectDir()?.let {
                 repositoryManager.getRepositoryForFile(it)
             }
+            val primaryRepositoryRootPath = primaryRepository?.root?.path
 
             buildList {
                 primaryRepository?.let { add(it) }
-                addAll(repositoryManager.repositories.filter { it.root.path != primaryRepository?.root?.path })
+                addAll(repositoryManager.repositories.filter { it.root.path != primaryRepositoryRootPath })
             }
         } catch (e: Exception) {
             logger.warn("Failed to get git repositories", e)
@@ -134,7 +135,6 @@ object GitUtil {
         }
 
         val matchingCommits = commitHashes.associateWith { mutableListOf<RepositoryCommit>() }
-            .toMutableMap()
 
         getProjectRepositories(project).forEach { repository ->
             getCommitsForHashes(project, repository, commitHashes)
@@ -257,18 +257,17 @@ object GitUtil {
             } ?: 0L
         }
 
-        return StringWriter().use { diffWriter ->
-            UnifiedDiffWriter.write(
-                null,
-                repositoryRootPath,
-                patches,
-                diffWriter,
-                "\n\n",
-                null,
-                null
-            )
-            diffWriter.toString()
-        }
+        val diffWriter = StringWriter()
+        UnifiedDiffWriter.write(
+            null,
+            repositoryRootPath,
+            patches,
+            diffWriter,
+            "\n\n",
+            null,
+            null
+        )
+        return diffWriter.toString()
     }
 
     private fun belongsToRepository(change: Change, repository: GitRepository): Boolean {
